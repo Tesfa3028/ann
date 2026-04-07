@@ -1,0 +1,450 @@
+---
+title: "ML_VI_ANN"
+output:
+  html_document: default
+  pdf_document: default
+date: "2026-03-07"
+---
+
+### Name: Tesfalem Tessema (ID: 11420026)
+
+
+```{r setup, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(tidymodels)
+library(sjPlot)
+library(finalfit)
+library(knitr)
+library(gtsummary)
+library(reportRmd)
+library(naniar)
+library(mice)
+library(mlbench)
+library(vip)
+library(microbenchmark)
+library(AppliedPredictiveModeling)
+library(brulee)
+library(neuralnet)
+options(scipen = 999)
+digits <- 2  
+```
+
+### Research question 
+
+***Can we develop a model that will predict fruit and vegetable consumption?***
+
+```{r}
+data <- read_csv("can_path_data.csv")
+```
+
+### 1- Dataset Exploration
+
+```{r}
+# Adding fruit and vegetable consumption variable by summing the quantity of fruit and vegetable consumption in a week.
+data <- data %>%
+  mutate(FRUITS_VEG_QTY = NUT_FRUITS_QTY + NUT_VEG_QTY)
+summary(data$FRUITS_VEG_QTY)
+table(data$FRUITS_VEG_QTY)
+
+```
+
+```{r}
+# categorizing fruit and vegetable consumption into two categories: 1 for consumption of five times or less in a week and 2 for consumption of six times or more in a week. 
+data <- data %>%
+  mutate(FRUITS_VEG_CAT = case_when(
+    FRUITS_VEG_QTY <= 5 ~ 1,
+    FRUITS_VEG_QTY >= 6 ~ 2))
+  data$FRUITS_VEG_CAT <- factor(data$FRUITS_VEG_CAT)
+  summary(data$FRUITS_VEG_CAT)
+  data$NUT_FRUITS_QTY <- NULL
+
+```
+
+
+```{r}
+# Selecting variables
+data_small <- data %>%
+  select(FRUITS_VEG_CAT, HS_GEN_HEALTH, SDC_AGE_CALC, PM_BMI_SR, SDC_INCOME, PA_TOTAL_SHORT, SDC_EDU_LEVEL_AGE, SDC_GENDER, PM_WAIST_HIP_RATIO_SR, SLE_TIME)
+
+rm(data)
+glimpse(data_small)
+```
+
+
+```{r}
+# Missing managerment
+missing_table <- miss_var_summary(data_small)
+missing_table
+```
+
+8 variables have missing values ranging from 2 to 43%. I have imputed the missing values using MICE.
+
+
+```{r}
+# Imputing missing values
+
+mice_all <- mice(data_small, method = "cart", m = 1, maxit = 1) 
+mice_all$method
+
+mice_imp_data <- complete(mice_all)
+write_csv(mice_imp_data, "mice_imp_data.csv")
+```
+
+
+```{r}
+data <- read_csv("mice_imp_data.csv")
+```
+
+```{r}
+# Summary statistics for numeric variables
+rm_covsum(data=data,
+covs=c('SDC_AGE_CALC', 'SDC_EDU_LEVEL_AGE', 'PA_TOTAL_SHORT', 'PM_BMI_SR', 'PM_WAIST_HIP_RATIO_SR', 'SLE_TIME'),
+show.tests = TRUE
+)
+```
+
+
+```{r}
+# Data cleaning for numeric variables: outliers and non-meaningful values. 
+
+data <- data %>%
+          mutate(SDC_EDU_LEVEL_AGE = case_when(
+            SDC_EDU_LEVEL_AGE <= 0 ~ 0,
+            TRUE ~ SDC_EDU_LEVEL_AGE
+        ))
+data <- data %>%
+          mutate(PA_TOTAL_SHORT = case_when(
+            PA_TOTAL_SHORT > 6720 ~ 6720, # maximum number of minutes in a week (7 days * 24 hours * 60 minutes) minus 8 hours of sleep per day (7 days * 8 hours * 60 minutes) which is equivalent to 6720
+            TRUE ~ PA_TOTAL_SHORT
+        ))
+```
+
+```{r}
+rm_covsum(data=data,
+covs=c('SDC_AGE_CALC', 'SDC_EDU_LEVEL_AGE', 'PA_TOTAL_SHORT', 'PM_BMI_SR', 'PM_WAIST_HIP_RATIO_SR', 'SLE_TIME'),
+show.tests = TRUE
+)
+```
+
+The mean(SD) age of the participants was 51.5(10.8) while the mean(SD) age at which the participant completed the highest level of education was 25.4 (9.1). The median total physical activity, which is a quantitative indicator of global physical activity in metabolic equivalent (MET) was 1785.0 minutes per week, with a range of 0 to 6720 minutes per week, indicating a high level of variation in physical activity among the participants. Based on the measure taken and reported by the participants, the mean(SD) body mass index (BMI) was 27.5 (6.2) kg/m2, which falls in the overweight category according to standard BMI classifications. similarly, the mean(SD) waist-to-hip ratio, which is an indicator of body fat distribution and a risk factor for cardiovascular disease was was 0.9(0.1). Regarding sleep time, the participant reported a mean(SD) of 436.1 (75.4) minutes of sleep per day, which is equivalent to 7.3 hours of sleep per day. 
+
+
+```{r}
+# Data cleaning for categorical variables
+
+## Income level: Merging less than 10K (1),  10K-24,999 (2) and 25K-49,999 (3) into one category of less than 50K  and merging 150K-199,999 (7) and 200K or more (8) into one category of 150K or more 
+
+data <- data %>%
+	mutate(SDC_INCOME = case_when(
+		SDC_INCOME == 1 ~ 1,
+		SDC_INCOME == 2 ~ 1,
+		SDC_INCOME == 3 ~ 1,
+		SDC_INCOME == 4 ~ 2,
+		SDC_INCOME == 5 ~ 3,	
+		SDC_INCOME == 6 ~ 4,
+		SDC_INCOME == 7 ~ 5,
+		SDC_INCOME == 8 ~ 5)) %>%
+	mutate(SDC_INCOME = as.factor(SDC_INCOME))
+```
+
+
+```{r}
+## General health status: Merging poor (1) and fair (2)
+data <- data %>%
+	mutate(HS_GEN_HEALTH = case_when(
+		HS_GEN_HEALTH == 1 ~ 1,
+		HS_GEN_HEALTH == 2 ~ 1,
+		HS_GEN_HEALTH == 3 ~ 2,
+		HS_GEN_HEALTH == 4 ~ 3,	
+		HS_GEN_HEALTH == 5 ~ 4)) %>%
+		mutate(HS_GEN_HEALTH = as.factor(HS_GEN_HEALTH))
+
+```
+
+```{r}
+data$FRUITS_VEG_CAT <- as.factor(data$FRUITS_VEG_CAT)
+data$SDC_GENDER <- as.factor(data$SDC_GENDER)
+```
+
+
+```{r}
+rm_covsum(data=data,
+covs=c('FRUITS_VEG_CAT', 'SDC_GENDER', 'SDC_INCOME', 'HS_GEN_HEALTH'),
+show.tests = TRUE
+)
+```
+
+
+As presented in the table above, 65% of the participants reported consuming fruits and vegetables five times or less in a week and 35% of the participants reported consuming fruits and vegetables six times or more in a week. The majority of the participants (63%) were female. A quarter (24%) of the participants reported an income of less than 50K while 42% described their general health status as good.
+
+
+### 2- Baseline Artificial Neural Network
+
+#### Creating training and testing data
+
+```{r}
+set.seed(10)
+
+# Cross Validation Split
+cv_split <- initial_validation_split(data,
+                            strata = FRUITS_VEG_CAT, 
+                            prop = c(0.70, 0.20))
+
+# Create data frames for the two sets:
+train_data <- training(cv_split)
+test_data  <- testing(cv_split)
+
+table(train_data$FRUITS_VEG_CAT)
+table(test_data$FRUITS_VEG_CAT)
+```
+#### V folds
+
+```{r}
+folds <- vfold_cv(training(cv_split), v = 3, strata = FRUITS_VEG_CAT)
+```
+
+v = 3 is quite small for cross-validation. I have tried with v = 10, but the process did not complete after more than 10 hours. Therefore, I terminated the operation and used v=3 for the purposes of this assignment.
+
+
+#### Recipe
+
+```{r}
+fv_con_recipe <- 
+  recipe(FRUITS_VEG_CAT ~ ., data = train_data) %>%
+  step_zv(all_predictors(), -all_outcomes()) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_normalize(all_numeric_predictors())
+```
+
+### Baseline model with sigle layer neural network
+
+Based on the brulee mlp documentation, a baseline ANN model is implemented using default hyperparameters, including 3 hidden units, 100 training epochs, a learning rate of 0.01, penalty of 0.001, and relu activation.
+
+```{r}
+set.seed(10)
+mlp_model_bl_1l <- mlp(epochs = 100, 
+                 hidden_units = 3, 
+                 penalty = 0.001, 
+                 learn_rate = 0.01, 
+                 activation =  "relu") %>%
+                  set_engine("brulee", validation = 0) %>% 
+                  set_mode("classification")
+```
+
+
+#### Workflow
+
+```{r}
+mlp_workflow_bl_1l <- workflow() %>% 
+  add_model(mlp_model_bl_1l) %>% 
+  add_recipe(fv_con_recipe) 
+
+mlp_res_bl_1l <- mlp_workflow_bl_1l %>% 
+  fit_resamples(
+    resamples = folds,
+    control = control_resamples(save_pred = TRUE, verbose = FALSE)
+  )
+```
+
+#### Workflow results
+
+```{r}
+metrics_bl_1l <- collect_metrics(mlp_res_bl_1l)
+metrics_bl_1l
+```
+
+
+#### Final model - Test data
+
+```{r}
+final_mlp_workflow_1l <- workflow() %>%
+  add_recipe(fv_con_recipe) %>%
+  add_model(mlp_model_bl_1l)
+
+final_mlp_results_1l <- final_mlp_workflow_1l %>%
+  last_fit(cv_split)
+
+mlp_results_1l <- final_mlp_results_1l %>%
+  collect_metrics()
+
+mlp_results_1l
+```
+
+#### Final Results
+
+```{r}
+kable(mlp_results_1l, digits = 2)
+```
+
+### Baseline Model with  two layers of neural network
+
+#### Model
+
+Two layers of neural network with 5 and 3 hidden units respectively is implemented using the brulee mlp function. The model is trained for 100 epochs with a learning rate of 0.01, penalty of 0.001, and relu activation function.
+
+```{r}
+set.seed(10)
+mlp_model_bl_2l <- mlp(epochs = 100, 
+                 hidden_units = c(5, 3), 
+                 penalty = 0.001, 
+                 learn_rate = 0.01, 
+                 activation =  "relu") %>%
+                  set_engine("brulee", validation = 0) %>% 
+                  set_mode("classification")
+```
+
+
+#### Workflow
+
+```{r}
+mlp_workflow_bl_2l <- workflow() %>% 
+  add_model(mlp_model_bl_2l) %>% 
+  add_recipe(fv_con_recipe) 
+
+mlp_res_bl_2l <- mlp_workflow_bl_2l %>% 
+  fit_resamples(
+    resamples = folds,
+    control = control_resamples(save_pred = TRUE, verbose = FALSE)
+  )
+```
+
+
+#### Workflow results
+
+```{r}
+metrics_bl_2l <- collect_metrics(mlp_res_bl_2l)
+metrics_bl_2l
+```
+
+#### Final model - Test data
+
+```{r}
+final_mlp_workflow_2l <- workflow() %>%
+  add_recipe(fv_con_recipe) %>%
+  add_model(mlp_model_bl_2l)
+
+final_mlp_results_2l <- final_mlp_workflow_2l %>%
+  last_fit(cv_split)
+
+mlp_results_2l <- final_mlp_results_2l %>%
+  collect_metrics()
+
+mlp_results_2l
+
+```
+
+#### Final Results
+```{r}
+kable(mlp_results_2l, digits = 2)
+```
+
+***Remark:*** Compared to a single layer neural network, the two-layer neural network shows shows no improvement in accuracy, ROC AUC and Brier Score. 
+
+### 3- Hyperparameter Tuning
+
+Hyperparameter tuning is conducted using the two-layer ANN to see if this measure improves the model performance.
+
+
+```{r}
+set.seed(123)
+
+mlp_model_tuning_2l <- mlp(epochs = tune(), 
+                    hidden_units = tune(), 
+                    penalty = tune(), 
+                    learn_rate = tune(), 
+                    activation = tune()) %>% 
+                 set_engine("brulee_two_layer",
+                   hidden_units_2 = tune(),
+                   activation_2 = tune()) %>% 
+                 set_mode("classification")
+```
+
+#### Workflow
+```{r}
+mlp_workflow_tuning_2l <- 
+  workflow() %>% 
+  add_model(mlp_model_tuning_2l) %>% 
+  add_recipe(fv_con_recipe) %>% 
+    tune_grid(resamples = folds,
+                control = control_grid(save_pred = TRUE, 
+                verbose = FALSE)) 
+```
+
+#### Workflow results
+
+```{r}
+metrics_tune_2l <- collect_metrics(mlp_workflow_tuning_2l)
+show_best(mlp_workflow_tuning_2l, metric= "accuracy", n=5) 
+
+```
+
+
+```{r}
+show_best(mlp_workflow_tuning_2l, metric = "roc_auc", n = 5)
+
+```
+
+
+```{r}
+
+show_best(mlp_workflow_tuning_2l, metric = "brier_class", n = 5)
+```
+
+#### Final model - Test data
+
+```{r}
+mlp_best_2l <- 
+  mlp_workflow_tuning_2l %>% 
+  select_best(metric = "accuracy")
+
+mlp_final_model_2l <- finalize_model(
+                          mlp_model_tuning_2l,
+                          mlp_best_2l
+                          )
+mlp_final_model_2l
+```
+```{r}
+final_mlp_workflow_2l <- workflow() %>%
+                      add_recipe(fv_con_recipe) %>%
+                      add_model(mlp_final_model_2l)
+
+final_mlp_results_2l <- final_mlp_workflow_2l %>%
+                        last_fit(cv_split)
+
+mlp_results_2l <- final_mlp_results_2l %>% collect_metrics()
+```
+
+#### Final Results
+
+```{r}
+
+kable(mlp_results_2l, digits = 2)
+```
+
+
+### 4- Model Comparisons
+Compared to the baseline (both single and two-layer) ANN model, the tuned two-layer ANN model shows no meaningful improvement in accuracy, ROC AUC  and Brier Score.
+
+  **Metric**	    **Baseline 1l**  **Baseline 2l**       **Tuned 2l**      
+*   Accuracy	      0.66                0.65                0.66        
+*   Roc_auc	        0.63                0.63                0.64	   
+*   Brier_class	    0.21                0.22  	            0.21     
+
+The lack of improvement in the performance of the tuned ANN model compared to the baseline ANN models could be due to the small size of the dataset or the selected features where the model may not have enough data to learn from and generalize well. The use of 3 folds for cross-validation may also have contributed. Additionally, the baseline model may have already captured the underlying patterns in the data, and further tuning may not have provided significant benefits. 
+
+
+### 5- Feature Importance Analysis
+
+Artificial Neural Networks, often referred as “black box models” because of the fact that the model learn through many layers of weights. Therefore, inputs are transformed multiple times and effects are nonlinear and interacting. Therefore, feature importance cannot be directly extracted from ANN due to their complex, nonlinear structure and distributed weight representation.
+
+
+**Note:** I have used AI to understand the code and the concepts included in the assignment. 
+
+#### Session Info
+
+```{r}
+sessionInfo()
+```
+
